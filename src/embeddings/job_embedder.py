@@ -1,4 +1,4 @@
-"""Create embeddings for job listings using Azure OpenAI."""
+"""Job Embedder - Create embeddings for job postings."""
 from typing import List, Dict
 import numpy as np
 from openai import AzureOpenAI
@@ -9,47 +9,34 @@ load_dotenv()
 
 
 class JobEmbedder:
-    """Create embeddings for job listings using Azure OpenAI."""
+    """Create embeddings for job postings using Azure OpenAI."""
     
     def __init__(self):
         """Initialize Azure OpenAI client."""
-        # Load Azure OpenAI credentials
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
-        api_version = os.getenv("AZURE_OPENAI_API_VERSION")
-        
-        if not all([api_key, endpoint, deployment]):
-            raise ValueError(
-                "Missing Azure OpenAI configuration. Please check .env file.\n"
-                "Required: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, "
-                "AZURE_OPENAI_EMBEDDING_DEPLOYMENT"
-            )
-        
         self.client = AzureOpenAI(
-            api_key=api_key,
-            api_version=api_version,
-            azure_endpoint=endpoint
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
         )
         
-        self.deployment = deployment
-        print(f"✅ Using Azure OpenAI embeddings: {deployment}")
+        self.embedding_model = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
+        print(f"✅ JobEmbedder initialized with model: {self.embedding_model}")
     
     def create_job_text(self, job: Dict) -> str:
         """
-        Create searchable text from job data.
+        Create a text representation of a job for embedding.
         
         Args:
-            job: Job dictionary with title, location, description, etc.
+            job: Job dictionary
         
         Returns:
-            Combined text for embedding
+            Formatted text string
         """
         parts = []
         
-        # Title (most important)
+        # Title
         if job.get('title'):
-            parts.append(f"Title: {job['title']}")
+            parts.append(f"Job Title: {job['title']}")
         
         # Company
         if job.get('company'):
@@ -59,7 +46,7 @@ class JobEmbedder:
         if job.get('location'):
             parts.append(f"Location: {job['location']}")
         
-        # Job type
+        # Job Type
         if job.get('job_type'):
             parts.append(f"Type: {job['job_type']}")
         
@@ -67,61 +54,66 @@ class JobEmbedder:
         if job.get('category'):
             parts.append(f"Category: {job['category']}")
         
-        # Description (if available)
+        # Description
         if job.get('description'):
-            parts.append(f"Description: {job['description'][:500]}")
+            desc = job['description'][:500]  # Limit length
+            parts.append(f"Description: {desc}")
         
-        # Requirements (if available)
+        # Requirements
         if job.get('requirements'):
-            parts.append(f"Requirements: {job['requirements'][:500]}")
+            req = job['requirements'][:500]  # Limit length
+            parts.append(f"Requirements: {req}")
         
         return " | ".join(parts)
     
-    def embed_jobs(self, jobs: List[Dict]) -> np.ndarray:
+    def get_embedding(self, text: str) -> List[float]:
+        """
+        Get embedding for a single text.
+        
+        Args:
+            text: Input text
+        
+        Returns:
+            Embedding vector
+        """
+        response = self.client.embeddings.create(
+            input=text,
+            model=self.embedding_model
+        )
+        return response.data[0].embedding
+    
+    def embed_jobs(self, jobs: List[Dict], batch_size: int = 100) -> np.ndarray:
         """
         Create embeddings for multiple jobs.
         
         Args:
             jobs: List of job dictionaries
+            batch_size: Number of jobs to process at once
         
         Returns:
-            Numpy array of embeddings
+            NumPy array of embeddings
         """
-        texts = [self.create_job_text(job) for job in jobs]
-        
-        print(f"Creating embeddings for {len(texts)} jobs using Azure OpenAI...")
-        
-        # Azure OpenAI has a limit on batch size, process in chunks
-        batch_size = 100
         all_embeddings = []
+        total_batches = (len(jobs) + batch_size - 1) // batch_size
         
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            print(f"  Processing batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1}...")
+        for i in range(0, len(jobs), batch_size):
+            batch = jobs[i:i + batch_size]
+            batch_num = i // batch_size + 1
             
+            print(f"🔄 Processing batch {batch_num}/{total_batches} ({len(batch)} jobs)...")
+            
+            # Create texts for batch
+            texts = [self.create_job_text(job) for job in batch]
+            
+            # Get embeddings for batch
             response = self.client.embeddings.create(
-                input=batch,
-                model=self.deployment
+                input=texts,
+                model=self.embedding_model
             )
             
+            # Extract embeddings
             batch_embeddings = [item.embedding for item in response.data]
             all_embeddings.extend(batch_embeddings)
         
-        print(f"✅ Created {len(all_embeddings)} embeddings")
+        print(f"✅ Created embeddings for {len(all_embeddings)} jobs")
         return np.array(all_embeddings)
-    
-    def embed_query(self, query: str) -> np.ndarray:
-        """
-        Create embedding for search query.
-        
-        Args:
-            query: Search query text
-        
-        Returns:
-            Query embedding as numpy array
-        """
-        response = self.client.embeddings.create(
-            input=[query],
-            model=self.deployment
-        )
-        return np.array(response.data[0].embedding)

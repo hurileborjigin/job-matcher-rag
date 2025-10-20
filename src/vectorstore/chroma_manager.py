@@ -1,150 +1,167 @@
-"""Manage ChromaDB vector store for jobs."""
+"""ChromaDB Manager for storing and retrieving job embeddings."""
 import chromadb
 from chromadb.config import Settings
-from typing import List, Dict, Optional, Any
-from pathlib import Path
+from typing import List, Dict, Optional
+import numpy as np
 
 
 class ChromaManager:
-    """Manage job embeddings in ChromaDB."""
+    """Manage ChromaDB operations for job vectors."""
     
-    def __init__(self, persist_directory: str = "data/vector_store"):
+    def __init__(
+        self,
+        collection_name: str = "jobs",
+        persist_directory: str = "./data/chroma_db"
+    ):
         """
-        Initialize ChromaDB client.
+        Initialize ChromaDB manager.
         
         Args:
-            persist_directory: Directory to store vector database
+            collection_name: Name of the collection
+            persist_directory: Directory to persist data
         """
-        Path(persist_directory).mkdir(parents=True, exist_ok=True)
+        self.collection_name = collection_name
+        self.persist_directory = persist_directory
         
+        # Initialize client
         self.client = chromadb.PersistentClient(
             path=persist_directory,
-            settings=Settings(anonymized_telemetry=False)
+            settings=Settings(
+                anonymized_telemetry=False,
+                allow_reset=True
+            )
         )
         
-        self.collection_name = "jobs"
         self.collection = None
+        print(f"✅ ChromaDB initialized at: {persist_directory}")
     
     def create_collection(self, reset: bool = False):
         """
         Create or get collection.
         
         Args:
-            reset: If True, delete existing collection
+            reset: If True, delete existing collection and create new one
         """
         if reset:
             try:
-                self.client.delete_collection(self.collection_name)
+                self.client.delete_collection(name=self.collection_name)
                 print(f"🗑️  Deleted existing collection: {self.collection_name}")
-            except:
-                pass
+            except Exception as e:
+                print(f"ℹ️  No existing collection to delete: {e}")
         
         self.collection = self.client.get_or_create_collection(
             name=self.collection_name,
-            metadata={"description": "IT/CS job listings from it-cs.io"}
+            metadata={"description": "Job postings with embeddings"}
         )
         print(f"✅ Collection ready: {self.collection_name}")
     
-    def _clean_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Clean metadata by removing None values and converting to valid types.
-        
-        Args:
-            metadata: Raw metadata dictionary
-        
-        Returns:
-            Cleaned metadata dictionary
-        """
-        cleaned = {}
-        for key, value in metadata.items():
-            if value is None:
-                cleaned[key] = ""  # Replace None with empty string
-            elif isinstance(value, (str, int, float, bool)):
-                cleaned[key] = value
-            else:
-                cleaned[key] = str(value)  # Convert other types to string
-        return cleaned
-    
     def add_jobs(self, jobs: List[Dict], embeddings: List[List[float]]):
         """
-        Add jobs to vector store.
+        Add jobs with embeddings to collection.
         
         Args:
             jobs: List of job dictionaries
             embeddings: List of embedding vectors
         """
-        if not self.collection:
-            self.create_collection()
+        if self.collection is None:
+            raise ValueError("Collection not initialized. Call create_collection() first.")
         
-        # Prepare data
-        ids = [str(job['id']) for job in jobs]
-        documents = [job.get('title', 'No title') or 'No title' for job in jobs]
+        if len(jobs) != len(embeddings):
+            raise ValueError(f"Jobs ({len(jobs)}) and embeddings ({len(embeddings)}) count mismatch")
         
-        # Clean metadata - remove None values
+        # Prepare data for ChromaDB
+        ids = []
+        documents = []
         metadatas = []
-        for job in jobs:
-            metadata = {
-                'title': job.get('title') or 'N/A',
-                'company': job.get('company') or 'N/A',
-                'location': job.get('location') or 'N/A',
-                'job_type': job.get('job_type') or 'N/A',
-                'url': job.get('url') or '',
-                'category': job.get('category') or 'N/A',
-            }
-            # Additional cleaning
-            cleaned_metadata = self._clean_metadata(metadata)
-            metadatas.append(cleaned_metadata)
+        embedding_list = []
         
-        # Add to collection in batches (ChromaDB has limits)
+        for i, job in enumerate(jobs):
+            # Create unique ID
+            job_id = str(job.get('id', i))
+            ids.append(f"job_{job_id}")
+            
+            # Create document text (for reference)
+            doc_text = f"{job.get('title', '')} {job.get('company', '')} {job.get('description', '')}"
+            documents.append(doc_text[:1000])  # Limit length
+            
+            # Create metadata
+            metadata = {
+                'job_id': int(job.get('id', i)),
+                'title': str(job.get('title', 'Unknown'))[:500],
+                'company': str(job.get('company', 'Unknown'))[:200],
+                'location': str(job.get('location', 'Unknown'))[:200],
+                'job_type': str(job.get('job_type', 'Unknown'))[:100],
+                'category': str(job.get('category', 'Unknown'))[:200],
+                'url': str(job.get('url', ''))[:500],
+                'description': str(job.get('description', ''))[:1000],
+                'requirements': str(job.get('requirements', ''))[:1000],
+                'posted_date': str(job.get('posted_date', 'Unknown'))[:50]
+            }
+            metadatas.append(metadata)
+            
+            # Add embedding
+            embedding_list.append(embeddings[i])
+        
+        # Add to collection in batches
         batch_size = 100
-        for i in range(0, len(jobs), batch_size):
-            end_idx = min(i + batch_size, len(jobs))
+        total_batches = (len(ids) + batch_size - 1) // batch_size
+        
+        for i in range(0, len(ids), batch_size):
+            batch_num = i // batch_size + 1
+            end_idx = min(i + batch_size, len(ids))
+            
+            print(f"📦 Adding batch {batch_num}/{total_batches} ({end_idx - i} jobs)...")
             
             self.collection.add(
                 ids=ids[i:end_idx],
-                embeddings=embeddings[i:end_idx],
                 documents=documents[i:end_idx],
-                metadatas=metadatas[i:end_idx]
+                metadatas=metadatas[i:end_idx],
+                embeddings=embedding_list[i:end_idx]
             )
-            
-            print(f"  Added batch {i//batch_size + 1}/{(len(jobs)-1)//batch_size + 1}")
         
-        print(f"✅ Added {len(jobs)} jobs to vector store")
-    
-    def search(
-        self,
-        query_embedding: List[float],
-        n_results: int = 10,
-        filter_dict: Optional[Dict] = None
-    ) -> Dict:
-        """
-        Search for similar jobs.
-        
-        Args:
-            query_embedding: Query vector
-            n_results: Number of results to return
-            filter_dict: Metadata filters (e.g., {'location': 'Berlin'})
-        
-        Returns:
-            Search results with jobs and distances
-        """
-        if not self.collection:
-            self.create_collection()
-        
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results,
-            where=filter_dict
-        )
-        
-        return results
+        print(f"✅ Added {len(ids)} jobs to collection")
     
     def get_stats(self) -> Dict:
-        """Get collection statistics."""
-        if not self.collection:
-            return {"count": 0}
+        """
+        Get collection statistics.
+        
+        Returns:
+            Dictionary with stats
+        """
+        if self.collection is None:
+            return {'count': 0, 'name': self.collection_name}
+        
+        count = self.collection.count()
         
         return {
-            "count": self.collection.count(),
-            "name": self.collection_name
+            'count': count,
+            'name': self.collection_name,
+            'persist_directory': self.persist_directory
         }
+    
+    def query(
+        self,
+        query_embeddings: List[List[float]],
+        n_results: int = 10,
+        where: Optional[Dict] = None
+    ) -> Dict:
+        """
+        Query the collection.
+        
+        Args:
+            query_embeddings: Query embedding vectors
+            n_results: Number of results to return
+            where: Optional metadata filters
+        
+        Returns:
+            Query results
+        """
+        if self.collection is None:
+            raise ValueError("Collection not initialized")
+        
+        return self.collection.query(
+            query_embeddings=query_embeddings,
+            n_results=n_results,
+            where=where,
+            include=["metadatas", "documents", "distances"]
+        )
