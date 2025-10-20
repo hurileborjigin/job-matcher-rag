@@ -43,13 +43,8 @@ env/
 logs/
 *.log
 
-# Database
-*.db
-*.sqlite
-*.sqlite3
 
-# Vector Store
-data/vector_store/
+
 
 # Jupyter Notebook
 .ipynb_checkpoints
